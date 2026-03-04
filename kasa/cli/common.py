@@ -200,7 +200,7 @@ async def _get_child_device(
     if child_option is not None:
         if child_option is OPTIONAL_VALUE_FLAG:
             msg = _list_children()
-            child_index_option = await click.prompt(
+            child_index_option = click.prompt(
                 f"\n{msg}\nEnter the index number of the child device",
                 type=click.IntRange(0, len(device.children) - 1),
             )
