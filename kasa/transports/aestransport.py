@@ -10,7 +10,6 @@ import base64
 import hashlib
 import logging
 import time
-from collections.abc import AsyncGenerator
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
@@ -52,6 +51,18 @@ def _sha1(payload: bytes) -> str:
     return sha1_algo.hexdigest()
 
 
+def _android_b64encode(payload: bytes) -> str:
+    """Return Base64 encoded text compatible with Android Base64 DEFAULT mode.
+
+    Android's Base64.DEFAULT wraps lines at 76 chars and appends a trailing
+    newline. Matching this formatting avoids subtle handshake differences.
+    """
+    encoded = base64.encodebytes(payload).decode().replace("\r\n", "\n")
+    if not encoded.endswith("\n"):
+        encoded += "\n"
+    return encoded
+
+
 class TransportState(Enum):
     """Enum for AES state."""
 
@@ -71,9 +82,10 @@ class AesTransport(BaseTransport):
     SESSION_COOKIE_NAME = "TP_SESSIONID"
     TIMEOUT_COOKIE_NAME = "TIMEOUT"
     COMMON_HEADERS = {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=UTF-8",
         "requestByApp": "true",
         "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
     }
     CONTENT_LENGTH = "Content-Length"
     KEY_PAIR_CONTENT_LENGTH = 314
@@ -113,6 +125,11 @@ class AesTransport(BaseTransport):
                 aes_keys["private"], aes_keys["public"]
             )
         self._app_url = URL(f"http://{self._host}:{self._port}/app")
+        # APK interceptor (a90.a) adds Referer=<base url> on each request.
+        self._common_headers = {
+            **self.COMMON_HEADERS,
+            "Referer": str(self._app_url.with_path("/")),
+        }
         self._token_url: URL | None = None
 
         _LOGGER.debug("Created AES transport for %s", self._host)
@@ -183,7 +200,7 @@ class AesTransport(BaseTransport):
         status_code, resp_dict = await self._http_client.post(
             url,
             json=passthrough_request,
-            headers=self.COMMON_HEADERS,
+            headers=self._common_headers,
             cookies_dict=self._session_cookie,
         )
         # _LOGGER.debug(f"secure_passthrough response is {status_code}: {resp_dict}")
@@ -272,12 +289,8 @@ class AesTransport(BaseTransport):
         self._token_url = self._app_url.with_query(f"token={login_token}")
         self._state = TransportState.ESTABLISHED
 
-    async def _generate_key_pair_payload(self) -> AsyncGenerator:
-        """Generate the request body and return an ascyn_generator.
-
-        This prevents the key pair being generated unless a connection
-        can be made to the device.
-        """
+    def _generate_key_pair_payload(self) -> bytes:
+        """Generate handshake request body bytes for the current key pair."""
         _LOGGER.debug("Generating keypair")
         if not self._key_pair:
             kp = KeyPair.create_key_pair()
@@ -290,12 +303,12 @@ class AesTransport(BaseTransport):
         pub_key = (
             "-----BEGIN PUBLIC KEY-----\n"
             + self._key_pair.public_key_der_b64  # type: ignore[union-attr]
-            + "\n-----END PUBLIC KEY-----\n"
+            + "-----END PUBLIC KEY-----\n"
         )
         handshake_params = {"key": pub_key}
         request_body = {"method": "handshake", "params": handshake_params}
         _LOGGER.debug("Handshake request: %s", request_body)
-        yield json_dumps(request_body).encode()
+        return json_dumps(request_body).encode()
 
     async def perform_handshake(self) -> None:
         """Perform the handshake."""
@@ -305,26 +318,41 @@ class AesTransport(BaseTransport):
         self._session_expire_at = None
         self._session_cookie = None
 
-        # Device needs the content length or it will response with 500
+        payload = self._generate_key_pair_payload()
+        # Device needs the content length or it will response with 500.
+        # Use the serialized payload size to match client behavior exactly.
         headers = {
-            **self.COMMON_HEADERS,
-            self.CONTENT_LENGTH: str(self.KEY_PAIR_CONTENT_LENGTH),
+            **self._common_headers,
+            self.CONTENT_LENGTH: str(len(payload)),
         }
+        _LOGGER.debug(
+            "Handshake request details for %s: url=%s content_length=%s headers=%s",
+            self._host,
+            self._app_url,
+            headers[self.CONTENT_LENGTH],
+            headers,
+        )
         http_client = self._http_client
 
         status_code, resp_dict = await http_client.post(
             self._app_url,
-            json=self._generate_key_pair_payload(),
+            json=payload,
             headers=headers,
             cookies_dict=self._session_cookie,
         )
 
-        _LOGGER.debug("Device responded with: %s", resp_dict)
+        _LOGGER.debug(
+            "Handshake response details for %s: status=%s response_type=%s response=%r",
+            self._host,
+            status_code,
+            type(resp_dict).__name__,
+            resp_dict,
+        )
 
         if status_code != 200:
             raise KasaException(
                 f"{self._host} responded with an unexpected "
-                + f"status code {status_code} to handshake"
+                + f"status code {status_code} to handshake: {resp_dict!r}"
             )
 
         if TYPE_CHECKING:
@@ -334,12 +362,25 @@ class AesTransport(BaseTransport):
 
         handshake_key = resp_dict["result"]["key"]
 
+        _LOGGER.debug(
+            "Handshake parsed response for %s: error_code=%s has_result_key=%s",
+            self._host,
+            resp_dict.get("error_code"),
+            bool(resp_dict.get("result", {}).get("key")),
+        )
+
         if (
             cookie := http_client.get_cookie(self.SESSION_COOKIE_NAME)  # type: ignore
         ) or (
             cookie := http_client.get_cookie("SESSIONID")  # type: ignore
         ):
             self._session_cookie = {self.SESSION_COOKIE_NAME: cookie}
+        _LOGGER.debug(
+            "Handshake cookies for %s: session_cookie=%s timeout_cookie=%s",
+            self._host,
+            self._session_cookie,
+            http_client.get_cookie(self.TIMEOUT_COOKIE_NAME),
+        )
 
         timeout = int(
             http_client.get_cookie(self.TIMEOUT_COOKIE_NAME) or ONE_DAY_SECONDS
@@ -470,8 +511,8 @@ class KeyPair:
             encoding=serialization.Encoding.DER,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        self.private_key_der_b64 = base64.b64encode(self.private_key_der_bytes).decode()
-        self.public_key_der_b64 = base64.b64encode(self.public_key_der_bytes).decode()
+        self.private_key_der_b64 = _android_b64encode(self.private_key_der_bytes)
+        self.public_key_der_b64 = _android_b64encode(self.public_key_der_bytes)
 
     def get_public_pem(self) -> bytes:
         """Get public key in PEM encoding."""
