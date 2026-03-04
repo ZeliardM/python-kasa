@@ -49,10 +49,13 @@ from kasa.smart import SmartDevice
 from kasa.smartcam import SmartCamDevice
 
 from .conftest import (
+    device_iot,
     device_smart,
+    device_smartcam,
     get_device_for_fixture_protocol,
     handle_turn_on,
     new_discovery,
+    parametrize_combine,
     turn_on,
 )
 
@@ -357,12 +360,47 @@ async def test_wifi_scan(dev, runner):
     assert re.search(r"Found [\d]+ wifi networks!", res.output)
 
 
-@device_smart
+@parametrize_combine([device_smart, device_iot])
 async def test_wifi_join(dev, mocker, runner):
     update = mocker.patch.object(dev, "update")
     res = await runner.invoke(
         wifi,
-        ["join", "FOOBAR", "--keytype", "wpa_psk", "--password", "foobar"],
+        ["join", "FOOBAR", "--keytype", "3", "--password", "foobar"],
+        obj=dev,
+    )
+
+    # Make sure that update was not called for wifi
+    with pytest.raises(AssertionError):
+        update.assert_called()
+
+    assert res.exit_code == 0
+    assert "Asking the device to connect to FOOBAR" in res.output
+
+
+@parametrize_combine([device_smart, device_iot])
+async def test_wifi_join_missing_keytype(dev, mocker, runner):
+    """Test that missing keytype raises KasaException and CLI echoes the message."""
+    update = mocker.patch.object(dev, "update")
+    res = await runner.invoke(
+        wifi,
+        ["join", "FOOBAR", "--password", "foobar"],
+        obj=dev,
+    )
+
+    # Make sure that update was not called for wifi
+    with pytest.raises(AssertionError):
+        update.assert_called()
+
+    assert res.exit_code == 0
+    assert "KeyType is required for this device." in res.output
+
+
+@device_smartcam
+async def test_wifi_join_smartcam(dev, mocker, runner):
+    update = mocker.patch.object(dev, "update")
+    res = await runner.invoke(
+        wifi,
+        ["join", "FOOBAR", "--password", "foobar"],
         obj=dev,
     )
 
@@ -997,6 +1035,43 @@ async def test_type_param(device_type, mocker, runner):
     )
     assert res.exit_code == 0
     assert isinstance(result_device, expected_type)
+
+
+@pytest.mark.parametrize(
+    ("cli_login_version", "expected_login_version"),
+    [
+        pytest.param(None, 2, id="No login-version defaults to 2"),
+        pytest.param(3, 3, id="Explicit login-version 3 is preserved"),
+        pytest.param(2, 2, id="Explicit login-version 2 is preserved"),
+    ],
+)
+async def test_type_camera_login_version(
+    cli_login_version, expected_login_version, mocker, runner
+):
+    """Test that --type camera respects an explicitly provided --login-version."""
+    from kasa.deviceconfig import DeviceConfig
+
+    captured_config: DeviceConfig | None = None
+
+    mocker.patch("kasa.cli.device.state")
+
+    async def _mock_connect(config: DeviceConfig):
+        nonlocal captured_config
+        captured_config = config
+        dev = SmartCamDevice(host="127.0.0.1", config=config)
+        return dev
+
+    mocker.patch("kasa.device.Device.connect", side_effect=_mock_connect)
+    mocker.patch.object(SmartCamDevice, "update")
+
+    args = ["--type", "camera", "--host", "127.0.0.1"]
+    if cli_login_version is not None:
+        args += ["--login-version", str(cli_login_version)]
+
+    res = await runner.invoke(cli, args)
+    assert res.exit_code == 0, res.output
+    assert captured_config is not None
+    assert captured_config.connection_type.login_version == expected_login_version
 
 
 @pytest.mark.skip(
