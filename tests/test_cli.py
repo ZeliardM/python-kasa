@@ -20,6 +20,7 @@ from kasa import (
     KasaException,
     Module,
 )
+from kasa.cli.camera import stream_rtsp_url, update_third_account_credentials
 from kasa.cli.device import (
     alias,
     factory_reset,
@@ -454,6 +455,125 @@ async def test_update_credentials(dev, runner):
         "Do you really want to replace the existing credentials? [y/N]: y\n"
         in res.output
     )
+
+
+@device_smartcam
+async def test_update_third_account_credentials(dev, mocker, runner):
+    camera = dev.modules.get(Module.Camera)
+    if not camera:
+        pytest.skip("Device does not expose camera module")
+    update_mock = mocker.patch.object(
+        camera, "update_third_account_credentials", return_value={"ok": True}
+    )
+
+    res = await runner.invoke(
+        update_third_account_credentials,
+        ["--username", "camaccuser", "--password", "camaccpassword"],
+        obj=dev,
+    )
+
+    assert res.exit_code == 0
+    assert "Third-account credentials updated and verified." in res.output
+    update_mock.assert_awaited_once_with("camaccuser", "camaccpassword")
+
+
+@device_smartcam
+async def test_update_third_account_credentials_no_camera_module(dev, runner):
+    with patch.object(type(dev), "modules", new_callable=PropertyMock, return_value={}):
+        res = await runner.invoke(
+            update_third_account_credentials,
+            ["--username", "camaccuser", "--password", "camaccpassword"],
+            obj=dev,
+        )
+
+    assert res.exit_code == 1
+    assert "Device does not support camera module." in res.output
+
+
+@device_smartcam
+async def test_update_third_account_credentials_unsupported_camera_module(dev, runner):
+    with patch.object(
+        type(dev),
+        "modules",
+        new_callable=PropertyMock,
+        return_value={Module.Camera: object()},
+    ):
+        res = await runner.invoke(
+            update_third_account_credentials,
+            ["--username", "camaccuser", "--password", "camaccpassword"],
+            obj=dev,
+        )
+
+    assert res.exit_code == 1
+    assert (
+        "Camera module does not support third-account credential updates." in res.output
+    )
+
+
+@device_smartcam
+async def test_stream_rtsp_url_command(dev, runner):
+    if not dev.modules.get(Module.Camera):
+        pytest.skip("Device does not expose camera module")
+
+    res = await runner.invoke(
+        stream_rtsp_url,
+        [
+            "--username",
+            "camaccuser",
+            "--password",
+            "camaccpassword",
+            "--stream-resolution",
+            "hd",
+        ],
+        obj=dev,
+    )
+
+    assert res.exit_code == 0
+    assert "rtsp://camaccuser:camaccpassword@127.0.0.123:554/stream1" in res.output
+
+
+@device_smartcam
+async def test_stream_rtsp_url_command_no_camera_module(dev, runner):
+    with patch.object(type(dev), "modules", new_callable=PropertyMock, return_value={}):
+        res = await runner.invoke(
+            stream_rtsp_url,
+            [
+                "--username",
+                "camaccuser",
+                "--password",
+                "camaccpassword",
+                "--stream-resolution",
+                "hd",
+            ],
+            obj=dev,
+        )
+
+    assert res.exit_code == 1
+    assert "Device does not support camera module." in res.output
+
+
+@device_smartcam
+async def test_stream_rtsp_url_command_unable_to_generate(dev, runner, mocker):
+    camera = dev.modules.get(Module.Camera)
+    if not camera:
+        pytest.skip("Device does not expose camera module")
+    mocker.patch.object(camera, "stream_rtsp_url", return_value=None)
+
+    res = await runner.invoke(
+        stream_rtsp_url,
+        [
+            "--username",
+            "camaccuser",
+            "--password",
+            "camaccpassword",
+            "--stream-resolution",
+            "hd",
+        ],
+        obj=dev,
+    )
+
+    assert res.exit_code == 1
+    assert "Unable to generate RTSP URL." in res.output
 
 
 async def test_time_get(dev, runner):

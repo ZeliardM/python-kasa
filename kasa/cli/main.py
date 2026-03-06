@@ -71,6 +71,7 @@ def _legacy_type_to_class(_type: str) -> Any:
         "discover": None,
         "device": None,
         "feature": None,
+        "camera": None,
         "light": None,
         "wifi": None,
         "time": None,
@@ -87,6 +88,9 @@ def _legacy_type_to_class(_type: str) -> Any:
         "reboot": "device",
         "update_credentials": "device",
         "sysinfo": "device",
+        # camera commands runnnable at top level
+        "update_third_account_credentials": "camera",
+        "stream_rtsp_url": "camera",
         # light commands runnnable at top level
         "presets": "light",
         "brightness": "light",
