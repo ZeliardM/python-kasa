@@ -10,7 +10,6 @@ import base64
 import hashlib
 import logging
 import time
-from collections.abc import AsyncGenerator
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
@@ -71,12 +70,12 @@ class AesTransport(BaseTransport):
     SESSION_COOKIE_NAME = "TP_SESSIONID"
     TIMEOUT_COOKIE_NAME = "TIMEOUT"
     COMMON_HEADERS = {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=UTF-8",
         "requestByApp": "true",
         "Accept": "application/json",
     }
     CONTENT_LENGTH = "Content-Length"
-    KEY_PAIR_CONTENT_LENGTH = 314
+    REFERRER = "Referer"
 
     def __init__(
         self,
@@ -113,6 +112,10 @@ class AesTransport(BaseTransport):
                 aes_keys["private"], aes_keys["public"]
             )
         self._app_url = URL(f"http://{self._host}:{self._port}/app")
+        self._headers = {
+            **self.COMMON_HEADERS,
+            self.REFERRER: f"http://{self._host}:{self._port}",
+        }
         self._token_url: URL | None = None
 
         _LOGGER.debug("Created AES transport for %s", self._host)
@@ -183,7 +186,7 @@ class AesTransport(BaseTransport):
         status_code, resp_dict = await self._http_client.post(
             url,
             json=passthrough_request,
-            headers=self.COMMON_HEADERS,
+            headers=self._headers,
             cookies_dict=self._session_cookie,
         )
         # _LOGGER.debug(f"secure_passthrough response is {status_code}: {resp_dict}")
@@ -272,12 +275,8 @@ class AesTransport(BaseTransport):
         self._token_url = self._app_url.with_query(f"token={login_token}")
         self._state = TransportState.ESTABLISHED
 
-    async def _generate_key_pair_payload(self) -> AsyncGenerator:
-        """Generate the request body and return an ascyn_generator.
-
-        This prevents the key pair being generated unless a connection
-        can be made to the device.
-        """
+    def _generate_key_pair_payload(self) -> bytes:
+        """Generate handshake request body bytes for the current key pair."""
         _LOGGER.debug("Generating keypair")
         if not self._key_pair:
             kp = KeyPair.create_key_pair()
@@ -287,15 +286,12 @@ class AesTransport(BaseTransport):
             }
             self._key_pair = kp
 
-        pub_key = (
-            "-----BEGIN PUBLIC KEY-----\n"
-            + self._key_pair.public_key_der_b64  # type: ignore[union-attr]
-            + "\n-----END PUBLIC KEY-----\n"
-        )
+        pub_key = self._key_pair.get_public_pem().decode()
+
         handshake_params = {"key": pub_key}
         request_body = {"method": "handshake", "params": handshake_params}
         _LOGGER.debug("Handshake request: %s", request_body)
-        yield json_dumps(request_body).encode()
+        return json_dumps(request_body).encode()
 
     async def perform_handshake(self) -> None:
         """Perform the handshake."""
@@ -305,16 +301,18 @@ class AesTransport(BaseTransport):
         self._session_expire_at = None
         self._session_cookie = None
 
-        # Device needs the content length or it will response with 500
+        payload = self._generate_key_pair_payload()
+
         headers = {
-            **self.COMMON_HEADERS,
-            self.CONTENT_LENGTH: str(self.KEY_PAIR_CONTENT_LENGTH),
+            **self._headers,
+            self.CONTENT_LENGTH: str(len(payload)),
         }
+
         http_client = self._http_client
 
         status_code, resp_dict = await http_client.post(
             self._app_url,
-            json=self._generate_key_pair_payload(),
+            json=payload,
             headers=headers,
             cookies_dict=self._session_cookie,
         )
