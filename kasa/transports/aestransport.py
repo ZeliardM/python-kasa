@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import textwrap
 import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
@@ -286,7 +287,18 @@ class AesTransport(BaseTransport):
             }
             self._key_pair = kp
 
-        pub_key = self._key_pair.get_public_pem().decode()
+        pub_key_formatted = "\n".join(
+            textwrap.wrap(self._key_pair.public_key_der_b64, 76)
+        )
+
+        if not pub_key_formatted.endswith("\n"):
+            pub_key_formatted += "\n"
+
+        pub_key = (
+            "-----BEGIN PUBLIC KEY-----\n"
+            + pub_key_formatted  # type: ignore[union-attr]
+            + "-----END PUBLIC KEY-----\n"
+        )
 
         handshake_params = {"key": pub_key}
         request_body = {"method": "handshake", "params": handshake_params}
