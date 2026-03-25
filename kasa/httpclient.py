@@ -22,6 +22,24 @@ from .json import loads as json_loads
 _LOGGER = logging.getLogger(__name__)
 
 
+def _hex_preview(data: bytes | None, limit: int = 64) -> str:
+    if data is None:
+        return "<none>"
+    preview = data[:limit].hex()
+    if len(data) > limit:
+        preview += "..."
+    return preview
+
+
+def _safe_text_preview(data: bytes | None, limit: int = 400) -> str:
+    if data is None:
+        return "<none>"
+    text = data.decode("utf-8", errors="replace")
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
+
+
 def get_cookie_jar() -> aiohttp.CookieJar:
     """Return a new cookie jar with the correct options for device communication."""
     return aiohttp.CookieJar(unsafe=True, quote_cookie=False)
@@ -90,17 +108,49 @@ class HttpClient:
         self._last_url = url
         self.client.cookie_jar.clear()
         return_json = bool(json)
+
         if self._config.timeout is None:
             _LOGGER.warning("Request timeout is set to None.")
         client_timeout = aiohttp.ClientTimeout(total=self._config.timeout)
 
+        original_json_type = type(json).__name__ if json is not None else None
+
         # If json is not a dict send as data.
-        # This allows the json parameter to be used to pass other
-        # types of data such as async_generator and still have json
-        # returned.
         if json and not isinstance(json, dict):
             data = json
             json = None
+
+        request_body_bytes: bytes | None = None
+        if data is not None:
+            request_body_bytes = data
+        elif json is not None:
+            try:
+                import json as std_json
+
+                request_body_bytes = std_json.dumps(
+                    json, separators=(",", ":")
+                ).encode()
+            except Exception:
+                request_body_bytes = None
+
+        _LOGGER.debug(
+            "HTTP POST request for %s: params=%s headers=%s cookies=%s "
+            "original_json_type=%s final_json_type=%s data_len=%s",
+            self._config.host,
+            params,
+            headers,
+            cookies_dict,
+            original_json_type,
+            type(json).__name__ if json is not None else None,
+            len(data) if data is not None else None,
+        )
+        _LOGGER.debug(
+            "HTTP POST request body preview for %s: text=%r hex=%s",
+            self._config.host,
+            _safe_text_preview(request_body_bytes, 800),
+            _hex_preview(request_body_bytes, 128),
+        )
+
         try:
             resp = await self.client.post(
                 url,
@@ -113,11 +163,28 @@ class HttpClient:
                 ssl=ssl,
             )
             async with resp:
-                response_data = await resp.read()
+                raw_response_bytes = await resp.read()
+
+            _LOGGER.debug(
+                "HTTP raw response for %s: status=%s headers=%s "
+                "body_text=%r body_hex=%s",
+                self._config.host,
+                resp.status,
+                dict(resp.headers),
+                _safe_text_preview(raw_response_bytes, 800),
+                _hex_preview(raw_response_bytes, 128),
+            )
+
+            response_data = raw_response_bytes
 
             if resp.status == 200:
                 if return_json:
                     response_data = json_loads(response_data.decode())
+                    _LOGGER.debug(
+                        "HTTP parsed JSON response for %s: %s",
+                        self._config.host,
+                        response_data,
+                    )
             else:
                 _LOGGER.debug(
                     "Device %s received status code %s with response %s",
@@ -128,8 +195,16 @@ class HttpClient:
                 if response_data and return_json:
                     try:
                         response_data = json_loads(response_data.decode())
+                        _LOGGER.debug(
+                            "HTTP parsed non-200 JSON response for %s: %s",
+                            self._config.host,
+                            response_data,
+                        )
                     except Exception:
-                        _LOGGER.debug("Device %s response could not be parsed as json")
+                        _LOGGER.debug(
+                            "Device %s response could not be parsed as json",
+                            self._config.host,
+                        )
 
         except (aiohttp.ServerDisconnectedError, aiohttp.ClientOSError) as ex:
             if not self._wait_between_requests:

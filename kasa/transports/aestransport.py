@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-import textwrap
 import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
@@ -50,6 +49,26 @@ def _sha1(payload: bytes) -> str:
     sha1_algo = hashlib.sha1()  # noqa: S324
     sha1_algo.update(payload)
     return sha1_algo.hexdigest()
+
+
+def _hex_preview(data: bytes | None, limit: int = 64) -> str:
+    """Return a short hex preview for debug logging."""
+    if data is None:
+        return "<none>"
+    preview = data[:limit].hex()
+    if len(data) > limit:
+        preview += "..."
+    return preview
+
+
+def _safe_text_preview(data: bytes | None, limit: int = 400) -> str:
+    """Return a safe utf-8 preview for debug logging."""
+    if data is None:
+        return "<none>"
+    text = data.decode("utf-8", errors="replace")
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
 
 
 class TransportState(Enum):
@@ -184,13 +203,32 @@ class AesTransport(BaseTransport):
             "method": "securePassthrough",
             "params": {"request": encrypted_payload.decode()},
         }
+        _LOGGER.debug(
+            "Secure passthrough plaintext request for %s: %s", self._host, request
+        )
+        _LOGGER.debug(
+            "Secure passthrough encrypted request for %s: len=%d preview=%r",
+            self._host,
+            len(encrypted_payload),
+            encrypted_payload[:120],
+        )
+        _LOGGER.debug(
+            "Secure passthrough request object for %s: %s",
+            self._host,
+            passthrough_request,
+        )
         status_code, resp_dict = await self._http_client.post(
             url,
             json=passthrough_request,
             headers=self._headers,
             cookies_dict=self._session_cookie,
         )
-        # _LOGGER.debug(f"secure_passthrough response is {status_code}: {resp_dict}")
+        _LOGGER.debug(
+            "Secure passthrough response for %s: status=%s response=%s",
+            self._host,
+            status_code,
+            resp_dict,
+        )
 
         if status_code != 200:
             raise KasaException(
@@ -207,9 +245,19 @@ class AesTransport(BaseTransport):
         )
 
         raw_response: str = resp_dict["result"]["response"]
+        _LOGGER.debug(
+            "Secure passthrough raw encrypted response for %s: %r",
+            self._host,
+            raw_response,
+        )
 
         try:
             response = self._encryption_session.decrypt(raw_response.encode())
+            _LOGGER.debug(
+                "Secure passthrough decrypted response for %s: %s",
+                self._host,
+                response,
+            )
             ret_val = json_loads(response)
         except Exception as ex:
             try:
@@ -278,7 +326,8 @@ class AesTransport(BaseTransport):
 
     def _generate_key_pair_payload(self) -> bytes:
         """Generate handshake request body bytes for the current key pair."""
-        _LOGGER.debug("Generating keypair")
+        _LOGGER.debug("Generating keypair for %s", self._host)
+
         if not self._key_pair:
             kp = KeyPair.create_key_pair()
             self._config.aes_keys = {
@@ -286,28 +335,56 @@ class AesTransport(BaseTransport):
                 "public": kp.public_key_der_b64,
             }
             self._key_pair = kp
-
-        pub_key_formatted = "\n".join(
-            textwrap.wrap(self._key_pair.public_key_der_b64, 76)
-        )
-
-        if not pub_key_formatted.endswith("\n"):
-            pub_key_formatted += "\n"
+            _LOGGER.debug(
+                "Generated new RSA keypair for %s: public_der_len=%d "
+                "private_der_len=%d public_b64_len=%d private_b64_len=%d",
+                self._host,
+                len(kp.public_key_der_bytes),
+                len(kp.private_key_der_bytes),
+                len(kp.public_key_der_b64),
+                len(kp.private_key_der_b64),
+            )
+        else:
+            _LOGGER.debug(
+                "Reusing RSA keypair for %s: public_der_len=%d "
+                "private_der_len=%d public_b64_len=%d private_b64_len=%d",
+                self._host,
+                len(self._key_pair.public_key_der_bytes),
+                len(self._key_pair.private_key_der_bytes),
+                len(self._key_pair.public_key_der_b64),
+                len(self._key_pair.private_key_der_b64),
+            )
 
         pub_key = (
             "-----BEGIN PUBLIC KEY-----\n"
-            + pub_key_formatted  # type: ignore[union-attr]
-            + "-----END PUBLIC KEY-----\n"
+            + self._key_pair.public_key_der_b64
+            + "\n-----END PUBLIC KEY-----\n"
         )
 
         handshake_params = {"key": pub_key}
         request_body = {"method": "handshake", "params": handshake_params}
-        _LOGGER.debug("Handshake request: %s", request_body)
-        return json_dumps(request_body).encode()
+        payload = json_dumps(request_body).encode()
+
+        _LOGGER.debug("Handshake public key repr for %s: %r", self._host, pub_key)
+        _LOGGER.debug(
+            "Handshake public key stats for %s: pem_len=%d lines=%d",
+            self._host,
+            len(pub_key),
+            pub_key.count("\n"),
+        )
+        _LOGGER.debug("Handshake request object for %s: %s", self._host, request_body)
+        _LOGGER.debug("Handshake request payload repr for %s: %r", self._host, payload)
+        _LOGGER.debug(
+            "Handshake request payload hex preview for %s: %s",
+            self._host,
+            _hex_preview(payload, 128),
+        )
+
+        return payload
 
     async def perform_handshake(self) -> None:
         """Perform the handshake."""
-        _LOGGER.debug("Will perform handshaking...")
+        _LOGGER.debug("Will perform handshaking with %s", self._host)
 
         self._token_url = None
         self._session_expire_at = None
@@ -320,6 +397,13 @@ class AesTransport(BaseTransport):
             self.CONTENT_LENGTH: str(len(payload)),
         }
 
+        _LOGGER.debug("Handshake headers for %s: %s", self._host, headers)
+        _LOGGER.debug(
+            "Handshake cookies before request for %s: %s",
+            self._host,
+            self._session_cookie,
+        )
+
         http_client = self._http_client
 
         status_code, resp_dict = await http_client.post(
@@ -329,7 +413,12 @@ class AesTransport(BaseTransport):
             cookies_dict=self._session_cookie,
         )
 
-        _LOGGER.debug("Device responded with: %s", resp_dict)
+        _LOGGER.debug(
+            "Handshake parsed response for %s: status=%s body=%s",
+            self._host,
+            status_code,
+            resp_dict,
+        )
 
         if status_code != 200:
             raise KasaException(
@@ -343,26 +432,74 @@ class AesTransport(BaseTransport):
         self._handle_response_error_code(resp_dict, "Unable to complete handshake")
 
         handshake_key = resp_dict["result"]["key"]
+        _LOGGER.debug("Handshake result.key repr for %s: %r", self._host, handshake_key)
+        _LOGGER.debug(
+            "Handshake result.key length for %s: %d", self._host, len(handshake_key)
+        )
 
-        if (
-            cookie := http_client.get_cookie(self.SESSION_COOKIE_NAME)  # type: ignore
-        ) or (
-            cookie := http_client.get_cookie("SESSIONID")  # type: ignore
+        if (cookie := http_client.get_cookie(self.SESSION_COOKIE_NAME)) or (
+            cookie := http_client.get_cookie("SESSIONID")
         ):
             self._session_cookie = {self.SESSION_COOKIE_NAME: cookie}
 
         timeout = int(
             http_client.get_cookie(self.TIMEOUT_COOKIE_NAME) or ONE_DAY_SECONDS
         )
-        # There is a 24 hour timeout on the session cookie
-        # but the clock on the device is not always accurate
-        # so we set the expiry to 24 hours from now minus a buffer
+
+        _LOGGER.debug(
+            "Handshake cookies after request for %s: "
+            "TP_SESSIONID=%r TIMEOUT=%r stored=%s",
+            self._host,
+            http_client.get_cookie(self.SESSION_COOKIE_NAME)
+            or http_client.get_cookie("SESSIONID"),
+            http_client.get_cookie(self.TIMEOUT_COOKIE_NAME),
+            self._session_cookie,
+        )
+
         self._session_expire_at = time.time() + timeout - SESSION_EXPIRE_BUFFER_SECONDS
+
         if TYPE_CHECKING:
             assert self._key_pair is not None
-        self._encryption_session = AesEncyptionSession.create_from_keypair(
-            handshake_key, self._key_pair
-        )
+
+        try:
+            handshake_key_bytes = base64.b64decode(handshake_key.encode())
+            _LOGGER.debug(
+                "Handshake result.key decoded for %s: ciphertext_len=%d hex_preview=%s",
+                self._host,
+                len(handshake_key_bytes),
+                _hex_preview(handshake_key_bytes, 128),
+            )
+
+            key_and_iv = self._key_pair.decrypt_handshake_key(handshake_key_bytes)
+            _LOGGER.debug(
+                "Handshake RSA decrypt result for %s: plaintext_len=%d hex=%s",
+                self._host,
+                len(key_and_iv),
+                key_and_iv.hex(),
+            )
+
+            if len(key_and_iv) >= 32:
+                _LOGGER.debug(
+                    "Handshake AES material for %s: key=%s iv=%s",
+                    self._host,
+                    key_and_iv[:16].hex(),
+                    key_and_iv[16:32].hex(),
+                )
+            else:
+                _LOGGER.debug(
+                    "Handshake RSA plaintext too short for %s: len=%d",
+                    self._host,
+                    len(key_and_iv),
+                )
+
+            self._encryption_session = AesEncyptionSession(
+                key_and_iv[:16], key_and_iv[16:]
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Handshake decrypt/session creation failed for %s", self._host
+            )
+            raise
 
         self._state = TransportState.LOGIN_REQUIRED
 
