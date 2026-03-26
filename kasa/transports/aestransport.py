@@ -51,6 +51,13 @@ def _sha1(payload: bytes) -> str:
     return sha1_algo.hexdigest()
 
 
+def _public_key_encode(payload: bytes) -> str:
+    encoded = base64.encodebytes(payload).decode().replace("\r\n", "\n")
+    if not encoded.endswith("\n"):
+        encoded += "\n"
+    return encoded
+
+
 def _hex_preview(data: bytes | None, limit: int = 64) -> str:
     """Return a short hex preview for debug logging."""
     if data is None:
@@ -357,8 +364,8 @@ class AesTransport(BaseTransport):
 
         pub_key = (
             "-----BEGIN PUBLIC KEY-----\n"
-            + self._key_pair.public_key_der_b64
-            + "\n-----END PUBLIC KEY-----\n"
+            + _public_key_encode(self._key_pair.public_key_der_bytes)
+            + "-----END PUBLIC KEY-----\n"
         )
 
         handshake_params = {"key": pub_key}

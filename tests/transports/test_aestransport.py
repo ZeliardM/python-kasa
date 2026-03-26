@@ -9,12 +9,13 @@ import time
 from contextlib import nullcontext as does_not_raise
 from json import dumps as json_dumps
 from json import loads as json_loads
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
+from cryptography.hazmat.primitives.asymmetric import rsa
 from freezegun.api import FrozenDateTimeFactory
 from yarl import URL
 
@@ -40,6 +41,10 @@ DUMMY_QUERY = {"foobar": {"foo": "bar", "bar": "foo"}}
 key = b"8\x89\x02\xfa\xf5Xs\x1c\xa1 H\x9a\x82\xc7\xd9\t"
 iv = b"9=\xf8\x1bS\xcd0\xb5\x89i\xba\xfd^9\x9f\xfa"
 KEY_IV = key + iv
+TEST_KEYS = {
+    "private": "MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8wggJbAgEAAoGBAMo/JQpXIbP2M3bLOKyfEVCURFCxHIXv4HDME8J58AL4BwGDXf0oQycgj9nV+T/MzgEd/4iVysYuYfLuIEKXADP7Lby6AfA/dbcinZZ7bLUNMNa7TaylIvVKtSfR0LV8AmG0jdQYkr4cTzLAEd+AEs/wG3nMQNEcoQRVY+svLPDjAgMBAAECgYBCsDOch0KbvrEVmMklUoY5Fcq4+M249HIDf6d8VwznTbWxsAmL8nzCKCCG6eF4QiYjhCrAdPQaCS1PF2oXywbLhngid/9W9gz4CKKDJChs1X8KvLi+TLg1jgJUXvq9yVNh1CB+lS2ho4gdDDCbVmiVOZR5TDfEf0xeJ+Zz3zlUEQJBAPkhuNdc3yRue8huFZbrWwikURQPYBxLOYfVTDsfV9mZGSkGoWS1FPDsxrqSXugTmcTRuw+lrXKDabJ72kqywA8CQQDP0oaGh5r7F12Xzcwb7X9JkTvyr+rO8YgVtKNBaNVOPabAzysNwOlvH/sNCVQcRj8rn5LNXitgLx6T+Q5uqa3tAkA7J0elUzbkhps7ju/vYri9x448zh3K+g2R9BJio2GPmCuCM0HVEK4FOqNBH4oLXsQPGKFq6LLTUuKg74l4XRL/AkBHBO6r8pNn0yhMxCtIL/UbsuIFoVBgv/F9WWmg5K5gOnlN0n4oCRC8xPUKE3IG54qW4cVNIS05hWCxuJ7R+nJRAkByt/+kX1nQxis2wIXj90fztXG3oSmoVaieYxaXPxlWvX3/Q5kslFF5UsGy9gcK0v2PXhqjTbhud3/X0Er6YP4v",
+    "public": "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDKPyUKVyGz9jN2yzisnxFQlERQsRyF7+BwzBPCefAC+AcBg139KEMnII/Z1fk/zM4BHf+IlcrGLmHy7iBClwAz+y28ugHwP3W3Ip2We2y1DTDWu02spSL1SrUn0dC1fAJhtI3UGJK+HE8ywBHfgBLP8Bt5zEDRHKEEVWPrLyzw4wIDAQAB",
+}
 
 
 def test_encrypt():
@@ -91,13 +96,9 @@ async def test_handshake_with_keys(mocker):
     mock_aes_device = MockAesDevice(host)
     mocker.patch.object(aiohttp.ClientSession, "post", side_effect=mock_aes_device.post)
 
-    test_keys = {
-        "private": "MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8wggJbAgEAAoGBAMo/JQpXIbP2M3bLOKyfEVCURFCxHIXv4HDME8J58AL4BwGDXf0oQycgj9nV+T/MzgEd/4iVysYuYfLuIEKXADP7Lby6AfA/dbcinZZ7bLUNMNa7TaylIvVKtSfR0LV8AmG0jdQYkr4cTzLAEd+AEs/wG3nMQNEcoQRVY+svLPDjAgMBAAECgYBCsDOch0KbvrEVmMklUoY5Fcq4+M249HIDf6d8VwznTbWxsAmL8nzCKCCG6eF4QiYjhCrAdPQaCS1PF2oXywbLhngid/9W9gz4CKKDJChs1X8KvLi+TLg1jgJUXvq9yVNh1CB+lS2ho4gdDDCbVmiVOZR5TDfEf0xeJ+Zz3zlUEQJBAPkhuNdc3yRue8huFZbrWwikURQPYBxLOYfVTDsfV9mZGSkGoWS1FPDsxrqSXugTmcTRuw+lrXKDabJ72kqywA8CQQDP0oaGh5r7F12Xzcwb7X9JkTvyr+rO8YgVtKNBaNVOPabAzysNwOlvH/sNCVQcRj8rn5LNXitgLx6T+Q5uqa3tAkA7J0elUzbkhps7ju/vYri9x448zh3K+g2R9BJio2GPmCuCM0HVEK4FOqNBH4oLXsQPGKFq6LLTUuKg74l4XRL/AkBHBO6r8pNn0yhMxCtIL/UbsuIFoVBgv/F9WWmg5K5gOnlN0n4oCRC8xPUKE3IG54qW4cVNIS05hWCxuJ7R+nJRAkByt/+kX1nQxis2wIXj90fztXG3oSmoVaieYxaXPxlWvX3/Q5kslFF5UsGy9gcK0v2PXhqjTbhud3/X0Er6YP4v",
-        "public": "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDKPyUKVyGz9jN2yzisnxFQlERQsRyF7+BwzBPCefAC+AcBg139KEMnII/Z1fk/zM4BHf+IlcrGLmHy7iBClwAz+y28ugHwP3W3Ip2We2y1DTDWu02spSL1SrUn0dC1fAJhtI3UGJK+HE8ywBHfgBLP8Bt5zEDRHKEEVWPrLyzw4wIDAQAB",
-    }
     transport = AesTransport(
         config=DeviceConfig(
-            host, credentials=Credentials("foo", "bar"), aes_keys=test_keys
+            host, credentials=Credentials("foo", "bar"), aes_keys=TEST_KEYS
         )
     )
 
@@ -105,8 +106,31 @@ async def test_handshake_with_keys(mocker):
     assert transport._state is TransportState.HANDSHAKE_REQUIRED
 
     await transport.perform_handshake()
-    assert transport._key_pair.private_key_der_b64 == test_keys["private"]
-    assert transport._key_pair.public_key_der_b64 == test_keys["public"]
+    assert transport._key_pair.private_key_der_b64 == TEST_KEYS["private"]
+    assert transport._key_pair.public_key_der_b64 == TEST_KEYS["public"]
+
+
+def test_handshake_payload_matches_android_public_key_format():
+    host = "127.0.0.1"
+    transport = AesTransport(
+        config=DeviceConfig(
+            host, credentials=Credentials("foo", "bar"), aes_keys=TEST_KEYS
+        )
+    )
+
+    payload = json_loads(transport._generate_key_pair_payload().decode())
+    public_key = payload["params"]["key"]
+
+    assert public_key.startswith("-----BEGIN PUBLIC KEY-----\n")
+    assert public_key.endswith("-----END PUBLIC KEY-----\n")
+
+    public_key_body = public_key[
+        len("-----BEGIN PUBLIC KEY-----\n") : -len("-----END PUBLIC KEY-----\n")
+    ]
+    public_key_lines = public_key_body.splitlines()
+
+    assert [len(line) for line in public_key_lines] == [76, 76, 64]
+    assert public_key_body.endswith("\n")
 
 
 @status_parameters
@@ -495,12 +519,10 @@ class MockAesDevice:
             return await self._return_send_response(url, json)
 
     async def _return_handshake_response(self, url: URL, json: dict[str, Any]):
-        start = len("-----BEGIN PUBLIC KEY-----\n")
-        end = len("\n-----END PUBLIC KEY-----\n")
-        client_pub_key = json["params"]["key"][start:-end]
-
-        client_pub_key_data = base64.b64decode(client_pub_key.encode())
-        client_pub_key = serialization.load_der_public_key(client_pub_key_data, None)
+        client_pub_key = cast(
+            rsa.RSAPublicKey,
+            serialization.load_pem_public_key(json["params"]["key"].encode(), None),
+        )
         encrypted_key = client_pub_key.encrypt(KEY_IV, asymmetric_padding.PKCS1v15())
         key_64 = base64.b64encode(encrypted_key).decode()
         return self._mock_response(
