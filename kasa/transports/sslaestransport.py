@@ -63,7 +63,8 @@ class SslAesTransport(BaseTransport):
     protocol, sometimes used by newer firmware versions on kasa devices.
     """
 
-    DEFAULT_PORT: int = 443
+    DEFAULT_PORT: int = 80
+    DEFAULT_HTTPS_PORT: int = 443
     COMMON_HEADERS = {
         "Content-Type": "application/json; charset=UTF-8",
         "requestByApp": "true",
@@ -109,8 +110,9 @@ class SslAesTransport(BaseTransport):
         self._encryption_session: AesEncyptionSession | None = None
         self._session_expire_at: float | None = None
 
+        _protocol = "https" if config.connection_type.https else "http"
         self._host_port = f"{self._host}:{self._port}"
-        self._app_url = URL(f"https://{self._host_port}")
+        self._app_url = URL(f"{_protocol}://{self._host_port}")
         self._token_url: URL | None = None
         self._ssl_context: ssl.SSLContext | None = None
         ref = str(self._token_url) if self._token_url else str(self._app_url)
@@ -140,6 +142,8 @@ class SslAesTransport(BaseTransport):
         """Default port for the transport."""
         if port := self._config.connection_type.http_port:
             return port
+        if self._config.connection_type.https:
+            return self.DEFAULT_HTTPS_PORT
         return self.DEFAULT_PORT
 
     @staticmethod
@@ -215,6 +219,12 @@ class SslAesTransport(BaseTransport):
             )
         return self._ssl_context
 
+    async def _ssl(self) -> ssl.SSLContext | bool:
+        """Return SSL context for HTTPS or False for plain HTTP."""
+        if self._config.connection_type.https:
+            return await self._get_ssl_context()
+        return False
+
     async def send_secure_passthrough(self, request: str) -> dict[str, Any]:
         """Send encrypted message as passthrough."""
         if self._state is TransportState.ESTABLISHED and self._token_url:
@@ -245,7 +255,7 @@ class SslAesTransport(BaseTransport):
             url,
             json=passthrough_request_str,
             headers=headers,
-            ssl=await self._get_ssl_context(),
+            ssl=await self._ssl(),
         )
 
         if TYPE_CHECKING:
@@ -323,7 +333,7 @@ class SslAesTransport(BaseTransport):
             url,
             json=request,
             headers=self._headers,
-            ssl=await self._get_ssl_context(),
+            ssl=await self._ssl(),
         )
 
         if status_code != 200:
@@ -409,7 +419,7 @@ class SslAesTransport(BaseTransport):
             self._app_url,
             json=body,
             headers=self._headers,
-            ssl=await self._get_ssl_context(),
+            ssl=await self._ssl(),
         )
         if status_code != 200:
             raise KasaException(
@@ -453,7 +463,7 @@ class SslAesTransport(BaseTransport):
             self._app_url,
             json=body,
             headers=self._headers,
-            ssl=await self._get_ssl_context(),
+            ssl=await self._ssl(),
         )
         if status_code != 200:
             raise KasaException(
@@ -636,7 +646,7 @@ class SslAesTransport(BaseTransport):
             self._app_url,
             json=body,
             headers=self._headers,
-            ssl=await self._get_ssl_context(),
+            ssl=await self._ssl(),
         )
 
         _LOGGER.debug("Device responded with status %s: %s", status_code, resp_dict)
