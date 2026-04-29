@@ -56,7 +56,8 @@ class SslTransport(BaseTransport):
     This transport uses HTTPS without any further payload encryption.
     """
 
-    DEFAULT_PORT: int = 4433
+    DEFAULT_PORT: int = 80
+    DEFAULT_HTTPS_PORT: int = 4433
     COMMON_HEADERS = {
         "Content-Type": "application/json",
     }
@@ -87,7 +88,8 @@ class SslTransport(BaseTransport):
         self._state = TransportState.LOGIN_REQUIRED
         self._session_expire_at: float | None = None
 
-        self._app_url = URL(f"https://{self._host}:{self._port}/app")
+        _protocol = "https" if config.connection_type.https else "http"
+        self._app_url = URL(f"{_protocol}://{self._host}:{self._port}/app")
 
         _LOGGER.debug("Created ssltransport for %s", self._host)
 
@@ -96,6 +98,8 @@ class SslTransport(BaseTransport):
         """Default port for the transport."""
         if port := self._config.connection_type.http_port:
             return port
+        if self._config.connection_type.https:
+            return self.DEFAULT_HTTPS_PORT
         return self.DEFAULT_PORT
 
     @property
@@ -232,4 +236,5 @@ class SslTransport(BaseTransport):
     async def reset(self) -> None:
         """Reset internal login state."""
         self._state = TransportState.LOGIN_REQUIRED
-        self._app_url = URL(f"https://{self._host}:{self._port}/app")
+        _protocol = "https" if self._config.connection_type.https else "http"
+        self._app_url = URL(f"{_protocol}://{self._host}:{self._port}/app")
