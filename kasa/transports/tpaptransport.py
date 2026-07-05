@@ -27,6 +27,7 @@ from ecdsa.ellipticcurve import CurveFp, PointJacobi
 from passlib.hash import md5_crypt, sha256_crypt
 from yarl import URL
 
+from kasa.credentials import Credentials
 from kasa.deviceconfig import DeviceConfig, DeviceFamily
 from kasa.exceptions import (
     SMART_AUTHENTICATION_ERRORS,
@@ -39,6 +40,7 @@ from kasa.exceptions import (
     _RetryableError,
 )
 from kasa.httpclient import HttpClient
+from kasa.json import dumps as json_dumps
 from kasa.json import loads as json_loads
 
 from .basetransport import BaseTransport
@@ -1135,6 +1137,15 @@ XhBkdDAKBggqhkjOPQQDAgNJADBGAiEA+7j5jemtXcGYN0unH+9rjVhVAL7WrsOi
     def __init__(self, *, config: DeviceConfig) -> None:
         """Create the transport."""
         super().__init__(config=config)
+        if not self._credentials and self._credentials_hash:
+            try:
+                ch = json_loads(
+                    base64.b64decode(self._credentials_hash.encode()).decode()
+                )
+                self._credentials = Credentials(ch["un"], ch["pwd"])
+                self._config.credentials = self._credentials
+            except Exception as ex:
+                _LOGGER.debug("Unable to decode stored credentials_hash: %s", ex)
         self._http_client: HttpClient = HttpClient(self._config)
         self._ssl_context: ssl.SSLContext | bool | None = None
         protocol = "https" if config.connection_type.https else "http"
@@ -1162,6 +1173,9 @@ XhBkdDAKBggqhkjOPQQDAgNJADBGAiEA+7j5jemtXcGYN0unH+9rjVhVAL7WrsOi
     @property
     def credentials_hash(self) -> str | None:
         """The hashed credentials used by the transport."""
+        if self._credentials and self._credentials.username:
+            ch = {"un": self._credentials.username, "pwd": self._credentials.password}
+            return base64.b64encode(json_dumps(ch).encode()).decode()
         return self._config.credentials_hash
 
     def _build_app_url(self, *, tls_mode: int | None, port: int | None) -> URL:

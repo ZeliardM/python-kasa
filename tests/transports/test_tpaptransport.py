@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import ssl
 import struct
@@ -1985,3 +1986,42 @@ async def test_transport_close_resets_and_closes_http_client(
 def test_transport_response_helpers_validate_json_payloads() -> None:
     with pytest.raises(KasaException, match="Unexpected TPAP JSON response body type"):
         tp.TpapTransport._load_json_dict(b"[]")
+
+
+@pytest.mark.asyncio
+async def test_credentials_hash_encodes_live_credentials() -> None:
+    transport = tp.TpapTransport(
+        config=DeviceConfig("tpap-host", credentials=Credentials("user", "pass"))
+    )
+
+    encoded = transport.credentials_hash
+    assert encoded is not None
+    decoded = json.loads(base64.b64decode(encoded.encode()).decode())
+    assert decoded == {"un": "user", "pwd": "pass"}
+
+
+@pytest.mark.asyncio
+async def test_init_decodes_credentials_from_hash() -> None:
+    seed = tp.TpapTransport(
+        config=DeviceConfig("tpap-host", credentials=Credentials("user", "pass"))
+    )
+    stored_hash = seed.credentials_hash
+    assert stored_hash is not None
+
+    transport = tp.TpapTransport(
+        config=DeviceConfig("tpap-host", credentials_hash=stored_hash)
+    )
+
+    assert transport._credentials is not None
+    assert transport._credentials.username == "user"
+    assert transport._credentials.password == "pass"  # noqa: S105
+    assert transport._config.credentials == transport._credentials
+
+
+@pytest.mark.asyncio
+async def test_init_ignores_malformed_credentials_hash() -> None:
+    transport = tp.TpapTransport(
+        config=DeviceConfig("tpap-host", credentials_hash="not-valid-base64-json")
+    )
+
+    assert transport._credentials is None
