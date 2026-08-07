@@ -394,7 +394,8 @@ class TpapEncryptionSession:
 
     @staticmethod
     def _xy_to_uncompressed(x: int, y: int, curve: ec.EllipticCurve) -> bytes:
-        numbers = ec.EllipticCurvePublicNumbers(x, y, curve)
+        # ecdsa may return gmpy2.mpz; cryptography requires builtin int.
+        numbers = ec.EllipticCurvePublicNumbers(int(x), int(y), curve)
         public_key = numbers.public_key()
         return public_key.public_bytes(
             encoding=serialization.Encoding.X962,
