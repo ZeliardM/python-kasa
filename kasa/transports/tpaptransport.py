@@ -1164,6 +1164,10 @@ XhBkdDAKBggqhkjOPQQDAgNJADBGAiEA+7j5jemtXcGYN0unH+9rjVhVAL7WrsOi
     def __init__(self, *, config: DeviceConfig) -> None:
         """Create the transport."""
         super().__init__(config=config)
+        if (
+            not self._credentials or self._credentials.username is None
+        ) and not self._credentials_hash:
+            self._credentials = Credentials()
         if self._credentials is None and self._credentials_hash:
             try:
                 decoded_hash = json_loads(
