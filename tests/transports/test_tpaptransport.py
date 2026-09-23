@@ -1072,6 +1072,38 @@ async def test_discover_parses_invalid_numeric_fields_as_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discover_tls0_over_https_does_not_downgrade_to_http() -> None:
+    """RV50 Pro Omni answers the in-band discover over TLS with tls=0."""
+    config = DeviceConfig("tpap-host")
+    config.connection_type.https = True
+    config.connection_type.http_port = 4433
+    transport = tp.TpapTransport(config=config)
+    session = transport._encryption_session
+
+    async def post(
+        url: URL,
+        *,
+        json: dict[str, Any] | None = None,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        ssl: ssl.SSLContext | bool | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        del url, json, data, headers, ssl
+        return 200, _discover_response(tls=0, port=4433, pake=[2], dac=True)
+
+    transport._http_client.post = post  # type: ignore[assignment]
+
+    await session._discover()
+    session._update_transport_url()
+
+    assert transport._app_url == URL("https://tpap-host:4433")
+    assert session.tls_mode == 2
+    assert transport._known_tpap_tls == 2
+    assert not session._use_dac_certification()
+    await transport.close()
+
+
+@pytest.mark.asyncio
 async def test_discover_propagates_device_error_codes() -> None:
     transport = tp.TpapTransport(config=DeviceConfig("discover-host"))
     session = transport._encryption_session
