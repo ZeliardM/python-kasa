@@ -399,7 +399,9 @@ class TpapEncryptionSession:
 
     @staticmethod
     def _xy_to_uncompressed(x: int, y: int, curve: ec.EllipticCurve) -> bytes:
-        numbers = ec.EllipticCurvePublicNumbers(x, y, curve)
+        # ecdsa returns gmpy2.mpz coordinates when gmpy2 is installed, and
+        # cryptography accepts only int
+        numbers = ec.EllipticCurvePublicNumbers(int(x), int(y), curve)
         public_key = numbers.public_key()
         return public_key.public_bytes(
             encoding=serialization.Encoding.X962,
@@ -816,7 +818,8 @@ class TpapEncryptionSession:
         m_comp, n_comp, nist, crypto_curve = self._suite_parameters(suite_type)
         curve: CurveFp = nist.curve
         generator: PointJacobi = nist.generator
-        order = generator.order()
+        # an mpz when gmpy2 is installed; keep the protocol integers plain int
+        order = int(generator.order())
         g_point = generator
 
         m_x, m_y = self._sec1_to_xy(m_comp, crypto_curve)

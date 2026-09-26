@@ -2130,3 +2130,63 @@ async def test_transport_close_resets_and_closes_http_client(
 def test_transport_response_helpers_validate_json_payloads() -> None:
     with pytest.raises(KasaException, match="Unexpected TPAP JSON response body type"):
         tp.TpapTransport._load_json_dict(b"[]")
+
+
+class _NotAnInt:
+    """An integer that is not an int, like the gmpy2.mpz ecdsa returns when gmpy2 is installed."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def __index__(self) -> int:
+        return self._value
+
+    __int__ = __index__
+
+
+def test_xy_to_uncompressed_accepts_non_int_coordinates() -> None:
+    curve = ec.SECP256R1()
+    numbers = ec.generate_private_key(curve).public_key().public_numbers()
+    expected = numbers.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    encoded = tp.TpapEncryptionSession._xy_to_uncompressed(
+        _NotAnInt(numbers.x), _NotAnInt(numbers.y), curve
+    )
+    assert encoded == expected
+
+
+class _GeneratorWithNonIntOrder:
+    """A generator whose order() is not an int, as with ecdsa on gmpy2."""
+
+    def __init__(self, generator: Any) -> None:
+        self._generator = generator
+
+    def order(self) -> _NotAnInt:
+        return _NotAnInt(int(self._generator.order()))
+
+    def __rmul__(self, other: int) -> Any:
+        return other * self._generator
+
+
+async def test_build_share_params_accepts_non_int_curve_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m_comp, n_comp, nist, crypto_curve = tp.TpapEncryptionSession._suite_parameters(2)
+    fake_nist = SimpleNamespace(
+        curve=nist.curve, generator=_GeneratorWithNonIntOrder(nist.generator)
+    )
+    monkeypatch.setattr(
+        tp.TpapEncryptionSession,
+        "_suite_parameters",
+        staticmethod(lambda suite_type: (m_comp, n_comp, fake_nist, crypto_curve)),
+    )
+    transport = _make_tpap_transport()
+    session = transport._encryption_session
+    session._user_random = base64.b64encode(b"\x01" * 16).decode()
+
+    share_params = session._build_share_params_from_register(
+        _register_result(), "secret"
+    )
+
+    assert share_params["user_confirm"]
