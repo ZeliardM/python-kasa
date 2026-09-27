@@ -727,3 +727,20 @@ class MockSslAesDevice:
 
     def put_next_response(self, request: dict | bytes) -> None:
         self._next_responses.append(request)
+
+
+async def test_handshake1_tpap_only_camera_reports_error_code(mocker):
+    """A camera that only speaks TPAP answers -40211 to handshake1."""
+    host = "127.0.0.1"
+    transport = SslAesTransport(
+        config=DeviceConfig(host, credentials=Credentials(MOCK_USER, MOCK_PWD))
+    )
+
+    async def refuse(*args, **kwargs):
+        return {"error_code": SmartErrorCode.MISSING_NECESSARY_PARAMS.value}
+
+    mocker.patch.object(transport, "try_send_handshake1", side_effect=refuse)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        await transport.perform_handshake1()
+    assert exc_info.value.error_code is SmartErrorCode.MISSING_NECESSARY_PARAMS

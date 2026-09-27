@@ -9,7 +9,12 @@ from typing import Any
 from .device import Device
 from .device_type import DeviceType
 from .deviceconfig import DeviceConfig, DeviceEncryptionType, DeviceFamily
-from .exceptions import KasaException, UnsupportedDeviceError
+from .exceptions import (
+    AuthenticationError,
+    KasaException,
+    SmartErrorCode,
+    UnsupportedDeviceError,
+)
 from .iot import (
     IotBulb,
     IotDevice,
@@ -84,6 +89,18 @@ async def connect(*, host: str | None = None, config: DeviceConfig) -> Device:
         raise
 
 
+def _needs_tpap_fallback(
+    config: DeviceConfig, protocol: BaseProtocol, ex: AuthenticationError
+) -> bool:
+    """Return True when a camera refused the AES login because it wants TPAP."""
+    return (
+        ex.error_code is SmartErrorCode.MISSING_NECESSARY_PARAMS
+        and isinstance(protocol._transport, SslAesTransport)
+        and config.connection_type.device_family
+        in TpapTransport.CAMERA_AUTH_DEVICE_FAMILIES
+    )
+
+
 async def _connect(config: DeviceConfig, protocol: BaseProtocol) -> Device:
     debug_enabled = _LOGGER.isEnabledFor(logging.DEBUG)
     if debug_enabled:
@@ -120,7 +137,28 @@ async def _connect(config: DeviceConfig, protocol: BaseProtocol) -> Device:
         config.connection_type.device_family.value, https=config.connection_type.https
     ):
         device = device_class(host=config.host, protocol=protocol)
-        await device.update()
+        try:
+            await device.update()
+        except AuthenticationError as ex:
+            if not _needs_tpap_fallback(config, protocol, ex):
+                raise
+            # Camera firmware that only speaks TPAP refuses the AES login
+            # with -40211. Switch the transport and remember the choice in
+            # the config so the next connection goes straight to TPAP.
+            _LOGGER.debug(
+                "Device %s refused the AES login with %s, retrying over TPAP",
+                config.host,
+                ex.error_code,
+            )
+            await protocol.close()
+            config.connection_type.encryption_type = DeviceEncryptionType.Tpap
+            protocol = SmartCamProtocol(transport=TpapTransport(config=config))
+            device = device_class(host=config.host, protocol=protocol)
+            try:
+                await device.update()
+            except BaseException:
+                await protocol.close()
+                raise
         _perf_log(True, "update")
         return device
     else:

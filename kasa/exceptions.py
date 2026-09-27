@@ -149,6 +149,8 @@ class SmartErrorCode(IntEnum):
     ONE_SECOND_REPEAT_REQUEST = -40109
     INVALID_NONCE = -40413
     PROTOCOL_FORMAT_ERROR = -40210
+    # Cameras on the TPAP firmware answer this to the AES login
+    MISSING_NECESSARY_PARAMS = -40211
     IP_CONFLICT = -40321
     DIAGNOSE_TYPE_NOT_SUPPORT = -69051
     DIAGNOSE_TASK_FULL = -69052

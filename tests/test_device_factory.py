@@ -314,3 +314,55 @@ async def test_get_protocol(
     protocol = get_protocol(config)
     assert isinstance(protocol, expected_protocol)
     assert isinstance(protocol._transport, expected_transport)
+
+
+async def test_connect_camera_falls_back_to_tpap(mocker):
+    """A camera that refuses the AES login with -40211 is retried over TPAP."""
+    from kasa.exceptions import AuthenticationError, SmartErrorCode
+
+    config = DeviceConfig(
+        host=DISCOVERY_MOCK_IP,
+        connection_type=DeviceConnectionParameters(
+            DeviceFamily.SmartIpCamera, DeviceEncryptionType.Aes, https=True
+        ),
+        credentials=Credentials("dummy_user", "dummy_password"),
+    )
+    seen: list[type[BaseTransport]] = []
+
+    async def fake_update(self, *args, **kwargs):
+        transport_cls = type(self.protocol._transport)
+        seen.append(transport_cls)
+        if transport_cls is SslAesTransport:
+            raise AuthenticationError(
+                "Error trying handshake1",
+                error_code=SmartErrorCode.MISSING_NECESSARY_PARAMS,
+            )
+
+    mocker.patch.object(SmartCamDevice, "update", fake_update)
+
+    dev = await connect(config=config)
+
+    assert seen == [SslAesTransport, TpapTransport]
+    assert isinstance(dev.protocol._transport, TpapTransport)
+    assert dev.config.connection_type.encryption_type is DeviceEncryptionType.Tpap
+
+
+async def test_connect_camera_other_auth_errors_are_not_retried(mocker):
+    from kasa.exceptions import AuthenticationError, SmartErrorCode
+
+    config = DeviceConfig(
+        host=DISCOVERY_MOCK_IP,
+        connection_type=DeviceConnectionParameters(
+            DeviceFamily.SmartIpCamera, DeviceEncryptionType.Aes, https=True
+        ),
+        credentials=Credentials("dummy_user", "dummy_password"),
+    )
+
+    async def fake_update(self, *args, **kwargs):
+        raise AuthenticationError("bad password", error_code=SmartErrorCode.LOGIN_ERROR)
+
+    mocker.patch.object(SmartCamDevice, "update", fake_update)
+
+    with pytest.raises(AuthenticationError):
+        await connect(config=config)
+    assert config.connection_type.encryption_type is DeviceEncryptionType.Aes

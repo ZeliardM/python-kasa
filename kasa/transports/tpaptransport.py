@@ -197,23 +197,40 @@ class TpapEncryptionSession:
 
     async def _discover(self) -> None:
         body = {"method": "login", "params": {"sub_method": "discover"}}
-        status, data = await self._transport._http_client.post(
-            self._transport._app_url.with_path("/"),
-            json=body,
-            headers=self._transport.COMMON_HEADERS,
-            ssl=await self._transport.get_ssl_context(),
-        )
-        if status != 200 or not isinstance(data, dict):
-            raise KasaException(
-                f"TPAP discover failed for {self._transport._host}: "
-                f"{status} {type(data)}"
+        try:
+            status, data = await self._transport._http_client.post(
+                self._transport._app_url.with_path("/"),
+                json=body,
+                headers=self._transport.COMMON_HEADERS,
+                ssl=await self._transport.get_ssl_context(),
             )
+            if status != 200 or not isinstance(data, dict):
+                raise KasaException(
+                    f"TPAP discover failed for {self._transport._host}: "
+                    f"{status} {type(data)}"
+                )
 
-        self._handle_response_error_code(data, "discover")
-        result = self._require_result_dict(data)
-        tpap = result.get("tpap")
-        if not isinstance(tpap, dict):
-            raise KasaException("TPAP discover response missing tpap object")
+            self._handle_response_error_code(data, "discover")
+            result = self._require_result_dict(data)
+            tpap = result.get("tpap")
+            if not isinstance(tpap, dict):
+                raise KasaException("TPAP discover response missing tpap object")
+        except (_RetryableError, _ConnectionError):
+            raise
+        except KasaException as exc:
+            if not self._uses_camera_auth:
+                raise
+            # Cameras (C510W fw 1.3.4 for example) refuse the in-band discover
+            # with -40209 and only announce TPAP in the UDP discovery, so fall
+            # back to what a TPAP camera advertises there.
+            _LOGGER.debug(
+                "TPAP: in-band discover not supported by %s (%s), "
+                "using camera defaults",
+                self._transport._host,
+                exc,
+            )
+            self._apply_camera_defaults()
+            return
 
         self._device_mac = str(result.get("mac") or "")
         self._tpap_tls = self._parse_optional_int(tpap.get("tls"))
@@ -232,6 +249,30 @@ class TpapEncryptionSession:
 
         # Discover runs before we know the real TLS mode, so rebuild for auth.
         self._transport._ssl_context = None
+
+    def _apply_camera_defaults(self) -> None:
+        """Use the TPAP parameters a camera advertises over UDP discovery.
+
+        Cameras answer the UDP discovery with ``encrypt_type: ["4"]`` and
+        ``tpap: {pake: [2], tls: 1, port: 443}`` and reject the in-band
+        discover, so the session is set up from those values: password
+        login, TLS on the management port, no DAC attestation.
+        """
+        transport = self._transport
+        self._device_mac = transport._known_device_mac or ""
+        self._tpap_tls = 1 if transport._config.connection_type.https else 0
+        self._tpap_port = transport._port
+        self._tpap_dac = False
+        self._tpap_pake = [2]
+        self._tpap_user_hash_type = None
+
+        transport._known_tpap_tls = self._tpap_tls
+        transport._known_tpap_port = self._tpap_port
+        transport._known_tpap_dac = False
+        transport._known_tpap_pake = [2]
+        transport._known_tpap_user_hash_type = None
+        self._update_transport_url()
+        transport._ssl_context = None
 
     async def _login(self, params: dict[str, Any], *, step_name: str) -> dict[str, Any]:
         body = {"method": "login", "params": params}
@@ -1122,6 +1163,7 @@ class TpapTransport(BaseTransport):
 
     DEFAULT_PORT: int = 80
     DEFAULT_HTTPS_PORT: int = 4433
+    DEFAULT_CAMERA_HTTPS_PORT: int = 443
     CAMERA_AUTH_DEVICE_FAMILIES = (
         DeviceFamily.SmartIpCamera,
         DeviceFamily.SmartTapoDoorbell,
@@ -1196,6 +1238,8 @@ XhBkdDAKBggqhkjOPQQDAgNJADBGAiEA+7j5jemtXcGYN0unH+9rjVhVAL7WrsOi
         if port := config.connection_type.http_port:
             return port
         if config.connection_type.https:
+            if config.connection_type.device_family in self.CAMERA_AUTH_DEVICE_FAMILIES:
+                return self.DEFAULT_CAMERA_HTTPS_PORT
             return self.DEFAULT_HTTPS_PORT
         return self.DEFAULT_PORT
 
