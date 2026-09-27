@@ -580,7 +580,10 @@ class SslAesTransport(BaseTransport):
                 )
                 raise DeviceError(msg, error_code=SmartErrorCode.DEVICE_BLOCKED)
 
-            raise AuthenticationError(f"Error trying handshake1: {resp_dict}")
+            raise AuthenticationError(
+                f"Error trying handshake1: {resp_dict}",
+                error_code=self._get_response_error(resp_dict) if resp_dict else None,
+            )
 
         if TYPE_CHECKING:
             resp_dict = cast(dict[str, Any], resp_dict)
