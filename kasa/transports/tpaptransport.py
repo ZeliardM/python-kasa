@@ -281,7 +281,14 @@ class TpapEncryptionSession:
         )
         if error_code in SMART_RETRYABLE_ERRORS:
             raise _RetryableError(full, error_code=error_code)
-        if error_code in SMART_AUTHENTICATION_ERRORS:
+        if (
+            error_code in SMART_AUTHENTICATION_ERRORS
+            or error_code is SmartErrorCode.ACCOUNT_ERROR
+        ):
+            # ACCOUNT_ERROR is reported by TPAP devices that have no usable
+            # account binding, i.e. the caller supplied no (or unusable)
+            # credentials. Surfacing it as an authentication failure lets
+            # consumers prompt for credentials instead of retrying forever.
             self._invalidate_session()
             raise AuthenticationError(full, error_code=error_code)
         raise DeviceError(full, error_code=error_code)
@@ -338,8 +345,27 @@ class TpapEncryptionSession:
                 share_result = await self._login(share_params, step_name="pake_share")
                 self._establish_session_from_share_result(share_result)
                 return
-            except (_RetryableError, _ConnectionError):
+            except _ConnectionError:
                 raise
+            except _RetryableError as exc:
+                # STAT_ACCESS_ERROR raised while verifying the SPAKE2+ proof
+                # means the passcode did not match; retrying cannot fix that.
+                # Fall through to the next candidate and, once they are all
+                # exhausted, report it as an authentication failure.
+                if exc.error_code is not SmartErrorCode.STAT_ACCESS_ERROR:
+                    raise
+                last_error = AuthenticationError(
+                    f"TPAP credential verification failed for "
+                    f"{self._transport._host}: {exc}",
+                    error_code=exc.error_code,
+                )
+                if attempt < candidate_count:
+                    _LOGGER.debug(
+                        "TPAP: credential candidate %d/%d rejected for %s",
+                        attempt,
+                        candidate_count,
+                        self._transport._host,
+                    )
             except KasaException as exc:
                 last_error = exc
                 if attempt < candidate_count:
