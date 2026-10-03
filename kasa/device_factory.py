@@ -105,8 +105,10 @@ async def _connect(config: DeviceConfig, protocol: BaseProtocol) -> Device:
     device_class: type[Device] | None
     device: Device | None = None
 
+    # IOT devices do not expose the bulb/light-strip distinction in the 20002
+    # discovery payload, so the concrete class has to come from sysinfo.
     if isinstance(protocol, IotProtocol) and isinstance(
-        protocol._transport, XorTransport
+        protocol._transport, (XorTransport, TpapTransport)
     ):
         info = await protocol.query(GET_SYSINFO_QUERY)
         _perf_log(True, "get_sysinfo")
@@ -240,6 +242,9 @@ def get_protocol(config: DeviceConfig, *, strict: bool = False) -> BaseProtocol 
     ] = {
         "IOT.XOR": (IotProtocol, XorTransport),
         "IOT.KLAP": (IotProtocol, KlapTransport),
+        # Newer IOT firmware (e.g. KL420L5 1.4.x) moved to the TPAP transport
+        # while keeping the legacy IOT command set.
+        "IOT.TPAP": (IotProtocol, TpapTransport),
         "SMART.AES": (SmartProtocol, AesTransport),
         "SMART.KLAP": (SmartProtocol, KlapTransportV2),
         "SMART.KLAP.HTTPS": (SmartProtocol, KlapTransportV2),
