@@ -366,3 +366,137 @@ async def test_connect_camera_other_auth_errors_are_not_retried(mocker):
     with pytest.raises(AuthenticationError):
         await connect(config=config)
     assert config.connection_type.encryption_type is DeviceEncryptionType.Aes
+
+
+def _klap_plug_config(credentials: Credentials | None = None) -> DeviceConfig:
+    return DeviceConfig(
+        host=DISCOVERY_MOCK_IP,
+        connection_type=DeviceConnectionParameters(
+            DeviceFamily.SmartTapoPlug, DeviceEncryptionType.Klap, login_version=2
+        ),
+        credentials=credentials,
+    )
+
+
+async def test_connect_klap_plug_falls_back_to_tpap(mocker):
+    """A plug that fails the KLAP handshake with the right password is retried."""
+    from kasa.exceptions import AuthenticationError
+
+    config = _klap_plug_config(Credentials("dummy_user", "dummy_password"))
+    seen: list[type[BaseTransport]] = []
+
+    async def fake_update(self, *args, **kwargs):
+        transport_cls = type(self.protocol._transport)
+        seen.append(transport_cls)
+        if transport_cls is KlapTransportV2:
+            raise AuthenticationError("Device response did not match our challenge")
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+
+    dev = await connect(config=config)
+
+    assert seen == [KlapTransportV2, TpapTransport]
+    assert dev.config.connection_type.encryption_type is DeviceEncryptionType.Tpap
+    assert dev.config.connection_type.login_version == 2
+    assert config.connection_type.encryption_type is DeviceEncryptionType.Klap
+
+
+async def test_connect_klap_plug_without_credentials_is_not_retried(mocker):
+    from kasa.exceptions import AuthenticationError
+
+    seen: list[type[BaseTransport]] = []
+
+    async def fake_update(self, *args, **kwargs):
+        seen.append(type(self.protocol._transport))
+        raise AuthenticationError("Device response did not match our challenge")
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+
+    with pytest.raises(AuthenticationError):
+        await connect(config=_klap_plug_config())
+    assert seen == [KlapTransportV2]
+
+
+async def test_connect_tpap_fallback_raises_tpap_auth_error(mocker):
+    """When both logins are refused the TPAP error, the more precise one, wins."""
+    from kasa.exceptions import AuthenticationError
+
+    async def fake_update(self, *args, **kwargs):
+        name = type(self.protocol._transport).__name__
+        raise AuthenticationError(f"{name} refused")
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+
+    with pytest.raises(AuthenticationError, match="TpapTransport refused"):
+        await connect(config=_klap_plug_config(Credentials("user", "wrong")))
+
+
+async def test_connect_tpap_fallback_other_error_raises_original(mocker):
+    from kasa.exceptions import AuthenticationError
+
+    async def fake_update(self, *args, **kwargs):
+        if isinstance(self.protocol._transport, KlapTransportV2):
+            raise AuthenticationError("klap refused")
+        raise KasaException("no TPAP here")
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+    close = mocker.spy(TpapTransport, "close")
+
+    with pytest.raises(AuthenticationError, match="klap refused"):
+        await connect(config=_klap_plug_config(Credentials("user", "pass")))
+    assert close.call_count == 1
+
+
+async def test_connect_closes_protocol_when_cancelled(mocker):
+    import asyncio
+
+    async def fake_update(self, *args, **kwargs):
+        raise asyncio.CancelledError
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+    close = mocker.spy(KlapTransportV2, "close")
+
+    with pytest.raises(asyncio.CancelledError):
+        await connect(config=_klap_plug_config(Credentials("user", "pass")))
+    assert close.call_count == 1
+
+
+async def test_connect_tpap_fallback_closes_protocol_when_cancelled(mocker):
+    import asyncio
+
+    from kasa.exceptions import AuthenticationError
+
+    async def fake_update(self, *args, **kwargs):
+        if isinstance(self.protocol._transport, KlapTransportV2):
+            raise AuthenticationError("klap refused")
+        raise asyncio.CancelledError
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+    close = mocker.spy(TpapTransport, "close")
+
+    with pytest.raises(asyncio.CancelledError):
+        await connect(config=_klap_plug_config(Credentials("user", "pass")))
+    assert close.call_count == 1
+
+
+async def test_connect_tpap_fallback_without_tpap_protocol(mocker):
+    from kasa import device_factory
+    from kasa.exceptions import AuthenticationError
+
+    async def fake_update(self, *args, **kwargs):
+        raise AuthenticationError("klap refused")
+
+    mocker.patch.object(SmartDevice, "update", fake_update)
+    real_get_protocol = device_factory.get_protocol
+    mocker.patch.object(
+        device_factory,
+        "get_protocol",
+        side_effect=lambda config, strict=False: (
+            None
+            if config.connection_type.encryption_type is DeviceEncryptionType.Tpap
+            else real_get_protocol(config, strict=strict)
+        ),
+    )
+
+    with pytest.raises(AuthenticationError, match="klap refused"):
+        await connect(config=_klap_plug_config(Credentials("user", "pass")))

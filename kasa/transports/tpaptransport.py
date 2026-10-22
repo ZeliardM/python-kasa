@@ -212,24 +212,30 @@ class TpapEncryptionSession:
 
             self._handle_response_error_code(data, "discover")
             result = self._require_result_dict(data)
-            tpap = result.get("tpap")
-            if not isinstance(tpap, dict):
-                raise KasaException("TPAP discover response missing tpap object")
         except (_RetryableError, _ConnectionError):
             raise
         except KasaException as exc:
             if not self._uses_camera_auth:
                 raise
             # Cameras (C510W fw 1.3.4 for example) refuse the in-band discover
-            # with -40209 and only announce TPAP in the UDP discovery, so fall
-            # back to what a TPAP camera advertises there.
+            # with -40209 and only announce TPAP in the UDP discovery.
             _LOGGER.debug(
-                "TPAP: in-band discover not supported by %s (%s), "
-                "using camera defaults",
+                "TPAP: in-band discover not supported by %s (%s), using defaults",
                 self._transport._host,
                 exc,
             )
-            self._apply_camera_defaults()
+            self._apply_default_params()
+            return
+
+        tpap = result.get("tpap")
+        if not isinstance(tpap, dict):
+            # Plugs on fw 1.4.8 (P115) answer the discover but leave the tpap
+            # object out, while still accepting a TPAP login.
+            _LOGGER.debug(
+                "TPAP: discover response from %s has no tpap object, using defaults",
+                self._transport._host,
+            )
+            self._apply_default_params(str(result.get("mac") or ""))
             return
 
         self._device_mac = str(result.get("mac") or "")
@@ -250,16 +256,16 @@ class TpapEncryptionSession:
         # Discover runs before we know the real TLS mode, so rebuild for auth.
         self._transport._ssl_context = None
 
-    def _apply_camera_defaults(self) -> None:
-        """Use the TPAP parameters a camera advertises over UDP discovery.
+    def _apply_default_params(self, mac: str = "") -> None:
+        """Set up the session when the device does not describe its TPAP mode.
 
-        Cameras answer the UDP discovery with ``encrypt_type: ["4"]`` and
-        ``tpap: {pake: [2], tls: 1, port: 443}`` and reject the in-band
-        discover, so the session is set up from those values: password
-        login, TLS on the management port, no DAC attestation.
+        Password login, no DAC attestation, and TLS only when the connection
+        is https. That matches what cameras advertise over UDP discovery
+        (``tpap: {pake: [2], tls: 1, port: 443}``) and what plugs that leave
+        the tpap object out accept (``tls: 0`` on port 80).
         """
         transport = self._transport
-        self._device_mac = transport._known_device_mac or ""
+        self._device_mac = mac or transport._known_device_mac or ""
         self._tpap_tls = 1 if transport._config.connection_type.https else 0
         self._tpap_port = transport._port
         self._tpap_dac = False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from typing import Any
 
 from .device import Device
@@ -84,21 +85,76 @@ async def connect(*, host: str | None = None, config: DeviceConfig) -> Device:
 
     try:
         return await _connect(config, protocol)
-    except:
+    except AuthenticationError as ex:
+        await protocol.close()
+        if (tpap_config := _get_tpap_fallback_config(config, protocol, ex)) is None:
+            raise
+        return await _connect_tpap_fallback(tpap_config, ex)
+    except BaseException:
         await protocol.close()
         raise
 
 
-def _needs_tpap_fallback(
+def _get_tpap_fallback_config(
     config: DeviceConfig, protocol: BaseProtocol, ex: AuthenticationError
-) -> bool:
-    """Return True when a camera refused the AES login because it wants TPAP."""
-    return (
-        ex.error_code is SmartErrorCode.MISSING_NECESSARY_PARAMS
-        and isinstance(protocol._transport, SslAesTransport)
-        and config.connection_type.device_family
-        in TpapTransport.CAMERA_AUTH_DEVICE_FAMILIES
+) -> DeviceConfig | None:
+    """Return a TPAP config to retry with when the advertised login was refused.
+
+    Some firmwares only accept TPAP while discovery still advertises the
+    older login: cameras (C510W fw 1.3.4) advertise AES and answer its login
+    with -40211, plugs (P115 fw 1.4.8) advertise KLAP lv2 and fail its
+    handshake with the right password. The camera check stays narrow because
+    cameras lock the account for about 30 minutes after a few failed logins.
+    """
+    ctype = config.connection_type
+    if config.credentials is None:
+        return None
+    if ctype.device_family in TpapTransport.CAMERA_AUTH_DEVICE_FAMILIES:
+        wants_tpap = ex.error_code is SmartErrorCode.MISSING_NECESSARY_PARAMS and (
+            isinstance(protocol._transport, SslAesTransport)
+        )
+    else:
+        wants_tpap = (
+            ctype.encryption_type is DeviceEncryptionType.Klap
+            and ctype.login_version == 2
+            and ctype.device_family.value.startswith("SMART.")
+        )
+    if not wants_tpap:
+        return None
+    return replace(
+        config,
+        credentials_hash=None,
+        connection_type=replace(ctype, encryption_type=DeviceEncryptionType.Tpap),
     )
+
+
+async def _connect_tpap_fallback(
+    config: DeviceConfig, original: AuthenticationError
+) -> Device:
+    """Connect over TPAP after the advertised login was refused.
+
+    An authentication error from TPAP is raised as is, it is the one that
+    tells the real reason (wrong password, lockout). Any other failure means
+    TPAP was not the answer, so the original error is raised instead.
+    """
+    _LOGGER.debug(
+        "Device %s refused the advertised login (%s), retrying over TPAP",
+        config.host,
+        original,
+    )
+    if (protocol := get_protocol(config=config, strict=True)) is None:
+        raise original
+    try:
+        return await _connect(config, protocol)
+    except AuthenticationError:
+        await protocol.close()
+        raise
+    except Exception as ex:
+        await protocol.close()
+        raise original from ex
+    except BaseException:
+        await protocol.close()
+        raise
 
 
 async def _connect(config: DeviceConfig, protocol: BaseProtocol) -> Device:
@@ -137,28 +193,7 @@ async def _connect(config: DeviceConfig, protocol: BaseProtocol) -> Device:
         config.connection_type.device_family.value, https=config.connection_type.https
     ):
         device = device_class(host=config.host, protocol=protocol)
-        try:
-            await device.update()
-        except AuthenticationError as ex:
-            if not _needs_tpap_fallback(config, protocol, ex):
-                raise
-            # Camera firmware that only speaks TPAP refuses the AES login
-            # with -40211. Switch the transport and remember the choice in
-            # the config so the next connection goes straight to TPAP.
-            _LOGGER.debug(
-                "Device %s refused the AES login with %s, retrying over TPAP",
-                config.host,
-                ex.error_code,
-            )
-            await protocol.close()
-            config.connection_type.encryption_type = DeviceEncryptionType.Tpap
-            protocol = SmartCamProtocol(transport=TpapTransport(config=config))
-            device = device_class(host=config.host, protocol=protocol)
-            try:
-                await device.update()
-            except BaseException:
-                await protocol.close()
-                raise
+        await device.update()
         _perf_log(True, "update")
         return device
     else:

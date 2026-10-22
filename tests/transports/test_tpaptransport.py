@@ -1102,7 +1102,7 @@ async def test_discover_propagates_device_error_codes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_discover_requires_result_and_tpap_objects() -> None:
+async def test_discover_requires_result_object() -> None:
     transport = tp.TpapTransport(config=DeviceConfig("discover-host"))
     session = transport._encryption_session
 
@@ -1135,8 +1135,10 @@ async def test_discover_requires_result_and_tpap_objects() -> None:
 
     transport._http_client.post = post_without_tpap  # type: ignore[assignment]
 
-    with pytest.raises(KasaException, match="missing tpap object"):
-        await session._discover()
+    # A missing tpap object is not fatal any more, see
+    # test_plug_discover_without_tpap_object_uses_defaults.
+    await session._discover()
+    assert session._tpap_pake == [2]
 
 
 @pytest.mark.asyncio
@@ -2185,3 +2187,38 @@ async def test_default_port_uses_443_for_https_cameras() -> None:
         )
     )
     assert generic_https._port == tp.TpapTransport.DEFAULT_HTTPS_PORT
+
+
+@pytest.mark.asyncio
+async def test_plug_discover_without_tpap_object_uses_defaults() -> None:
+    """P115 fw 1.4.8 answers the discover without a tpap object but takes TPAP."""
+    transport = tp.TpapTransport(
+        config=DeviceConfig(
+            "plug-host",
+            connection_type=DeviceConnectionParameters(
+                DeviceFamily.SmartTapoPlug,
+                DeviceEncryptionType.Tpap,
+                login_version=2,
+                http_port=80,
+            ),
+            credentials=Credentials("user", "pass"),
+        )
+    )
+    session = transport._encryption_session
+    transport._http_client.post = _make_error_post(  # type: ignore[assignment]
+        {
+            "error_code": 0,
+            "result": {"mac": "AA-BB-CC-DD-EE-FF", "tpap_preferred": False},
+        }
+    )
+
+    await session._discover()
+
+    assert session._device_mac == "AA-BB-CC-DD-EE-FF"
+    assert session._tpap_tls == 0
+    assert session._tpap_port == 80
+    assert session._tpap_pake == [2]
+    assert session._tpap_dac is False
+    assert session._get_passcode_type() == "userpw"
+    assert transport._app_url.scheme == "http"
+    assert transport._app_url.port == 80
