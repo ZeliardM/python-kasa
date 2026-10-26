@@ -105,8 +105,10 @@ async def _connect(config: DeviceConfig, protocol: BaseProtocol) -> Device:
     device_class: type[Device] | None
     device: Device | None = None
 
+    # IOT devices on TPAP only announce a family such as IOT.SMARTBULB, so
+    # like XOR take the class from sysinfo (light strips, dimmers, etc.).
     if isinstance(protocol, IotProtocol) and isinstance(
-        protocol._transport, XorTransport
+        protocol._transport, XorTransport | TpapTransport
     ):
         info = await protocol.query(GET_SYSINFO_QUERY)
         _perf_log(True, "get_sysinfo")
