@@ -279,6 +279,12 @@ ET = DeviceEncryptionType
             id="iot-xor",
         ),
         pytest.param(
+            CP(DF.IotSmartBulb, ET.Tpap, https=False),
+            IotProtocol,
+            TpapTransport,
+            id="iot-tpap",
+        ),
+        pytest.param(
             CP(DF.SmartTapoPlug, ET.Aes, https=False),
             SmartProtocol,
             AesTransport,

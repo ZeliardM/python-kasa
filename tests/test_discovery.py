@@ -39,8 +39,9 @@ from kasa.discover import (
     json_dumps,
 )
 from kasa.exceptions import AuthenticationError, UnsupportedDeviceError
-from kasa.iot import IotDevice, IotPlug
+from kasa.iot import IotBulb, IotDevice, IotPlug
 from kasa.transports.aestransport import AesEncyptionSession
+from kasa.transports.tpaptransport import TpapTransport
 from kasa.transports.xortransport import XorEncryption, XorTransport
 
 from .conftest import (
@@ -261,6 +262,29 @@ async def test_discover_single_unsupported(unsupported_device_info, mocker):
         UnsupportedDeviceError,
     ):
         await Discover.discover_single(host)
+
+
+async def test_discover_iot_device_with_tpap():
+    """Kasa IOT devices announcing TPAP get the IOT protocol over TPAP."""
+    info = {
+        "result": {
+            **UNSUPPORTED["result"],
+            "device_type": "IOT.SMARTBULB",
+            "device_model": "KL420L5(US)",
+            "mgt_encrypt_schm": {
+                "is_support_https": False,
+                "encrypt_type": "TPAP",
+                "http_port": 80,
+                "lv": 2,
+            },
+        },
+        "error_code": 0,
+    }
+    dev = Discover._get_device_instance(info, DeviceConfig("127.0.0.1"))
+    assert isinstance(dev, IotBulb)
+    assert isinstance(dev.protocol, IotProtocol)
+    assert isinstance(dev.protocol._transport, TpapTransport)
+    await dev.disconnect()
 
 
 async def test_discover_single_no_response(mocker):
