@@ -562,10 +562,12 @@ class TpapEncryptionSession:
 
     @staticmethod
     def _md5(data: bytes) -> bytes:
+        # codeql[py/weak-sensitive-data-hashing]
         return hashlib.md5(data).digest()  # noqa: S324
 
     @staticmethod
     def _sha256(data: bytes) -> bytes:
+        # codeql[py/weak-sensitive-data-hashing]
         return hashlib.sha256(data).digest()
 
     @classmethod
@@ -623,6 +625,7 @@ class TpapEncryptionSession:
     def _hash(algorithm: str, data: bytes) -> bytes:
         if algorithm.upper() == "SHA512":
             return hashlib.sha512(data).digest()
+        # codeql[py/weak-sensitive-data-hashing]
         return hashlib.sha256(data).digest()
 
     @staticmethod
@@ -668,6 +671,7 @@ class TpapEncryptionSession:
 
     @staticmethod
     def _sha1_hex(value: str) -> str:
+        # codeql[py/weak-sensitive-data-hashing]
         return hashlib.sha1(value.encode()).hexdigest()  # noqa: S324
 
     @classmethod
