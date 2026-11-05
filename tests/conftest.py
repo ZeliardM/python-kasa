@@ -176,7 +176,7 @@ def _socketpair_without_time_wait():
     dynamic port range, and the next loop then fails to start or hangs.
     Closing the pair with SO_LINGER set to zero releases the port immediately.
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or os.environ.get("KASA_PROBE_BASELINE"):
         yield
         return
 

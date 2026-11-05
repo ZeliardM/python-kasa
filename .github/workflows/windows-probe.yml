@@ -1,0 +1,76 @@
+---
+# Probe only, for the fork: never part of an upstream PR.
+name: Windows probe
+
+on:
+  push:
+    branches:
+      - 'probe/**'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: ${{ matrix.variant }} ${{ matrix.mode }} py${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        variant: [baseline, fix]
+        mode: [xdist]
+        include:
+          - python-version: "3.15"
+            variant: baseline
+            mode: smallrange
+          - python-version: "3.15"
+            variant: fix
+            mode: smallrange
+    steps:
+      - name: Checkout Source Files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Environment
+        uses: ./.github/actions/setup
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Show TCP port settings
+        shell: bash
+        run: |
+          netsh int ipv4 show dynamicport tcp
+          reg query 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' /v TcpTimedWaitDelay || echo "TcpTimedWaitDelay not set (Windows default)"
+          nproc || true
+
+      - name: Shrink dynamic port range to 2000 ports
+        if: matrix.mode == 'smallrange'
+        shell: bash
+        run: |
+          netsh int ipv4 set dynamicport tcp start=60000 num=2000
+          netsh int ipv4 show dynamicport tcp
+
+      - name: Run tests and sample TIME_WAIT
+        shell: bash
+        env:
+          KASA_PROBE_BASELINE: ${{ matrix.variant == 'baseline' && '1' || '' }}
+        run: |
+          set +e
+          (while true; do
+             echo "$(date +%T) TIME_WAIT=$(netstat -an -p tcp | grep -c TIME_WAIT)"
+             sleep 5
+           done) > timewait.log 2>&1 &
+          sampler=$!
+          start=$(date +%s)
+          if [ "${{ matrix.mode }}" = smallrange ]; then
+            uv run pytest tests/test_cli.py -n0 -p no:sugar -q \
+              --timeout 90 --timeout-method thread
+          else
+            uv run pytest -n auto -p no:sugar -q --cov kasa \
+              --timeout 90 --timeout-method thread
+          fi
+          rc=$?
+          echo "pytest exit=$rc after $(( $(date +%s) - start ))s"
+          kill $sampler
+          echo "--- TIME_WAIT samples (every 5 s)"
+          cat timewait.log
+          exit $rc
