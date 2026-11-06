@@ -1,0 +1,63 @@
+# Probe only, for the fork: never part of an upstream PR.
+name: Windows probe
+
+on:
+  push:
+    branches:
+      - 'probe/**'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: session loop ${{ matrix.mode }} py${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        mode: [xdist]
+        include:
+          - python-version: "3.14"
+            mode: serial
+          - python-version: "3.15"
+            mode: serial
+    steps:
+      - name: Checkout Source Files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Environment
+        uses: ./.github/actions/setup
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Show TCP port settings
+        shell: bash
+        run: |
+          netsh int ipv4 show dynamicport tcp
+          nproc || true
+
+      - name: Run tests and sample TIME_WAIT
+        shell: bash
+        run: |
+          set +e
+          (while true; do
+             echo "$(date +%T) TIME_WAIT=$(netstat -an -p tcp | grep -c TIME_WAIT)"
+             sleep 5
+           done) > timewait.log 2>&1 &
+          sampler=$!
+          start=$(date +%s)
+          if [ "${{ matrix.mode }}" = serial ]; then
+            uv run pytest -n0 -p no:sugar -q --cov kasa \
+              --timeout 90 --timeout-method thread
+          else
+            uv run pytest -n auto -p no:sugar -q --cov kasa \
+              --timeout 90 --timeout-method thread
+          fi
+          rc=$?
+          echo "pytest exit=$rc after $(( $(date +%s) - start ))s"
+          kill $sampler
+          echo "--- TIME_WAIT samples (every 5 s)"
+          cat timewait.log
+          echo "--- peak TIME_WAIT: $(sed 's/.*TIME_WAIT=//' timewait.log | sort -n | tail -1)"
+          exit $rc
