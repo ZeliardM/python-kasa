@@ -1623,6 +1623,13 @@ def test_echo_strips_rich_tags_without_rich(monkeypatch, capsys):
     assert capsys.readouterr().out == "Only discover is available [ABC]\n"
 
 
+def test_echo_prints_non_string_messages(capsys):
+    """Messages other than strings are echoed as-is."""
+    _echo(1)
+
+    assert capsys.readouterr().out == "1\n"
+
+
 tpap_object_discovery = parametrize_discovery(
     "tpap object discovery",
     model_filter={"C101(US)_5.0_1.4.3", "KP125M(US)_1.0_1.4.1"},
